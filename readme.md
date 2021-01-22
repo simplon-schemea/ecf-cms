@@ -1,5 +1,7 @@
 # ECF: Content Management System
 
+Instructions can be consulted [here](./instructions.pdf)
+
 ## Wordpress
 
 Link: [ecfschemea.wordpress.com](https://ecfschemea.wordpress.com/)
@@ -40,15 +42,17 @@ Syntax:
 {{varname}}: value to be subtituted by varname
 ```
 
-##### Unauthenticated requests should receive a 403 status
+#### Unauthenticated requests should return 403 Forbidden
 
 ```http request
 GET http://localhost:1337/topics
 
 > this.status === 403
+> this.json.statusCode === 403
+> this.json.error === "Forbidden"
 ```
 
-#### Authenticate
+#### Authentication should return 200 OK
 
 ```http request
 POST http://localhost:1337/auth/local
@@ -60,10 +64,12 @@ Content-Type: application/json
 }
 
 > this.status === 200 
+> typeof this.json.jwt === "string"
+> typeof this.json.user === "object"
 % store.jwt = this.json.jwt
 ```
 
-#### Authenticated POST should receive a 200 status
+#### Authenticated POST should return 200 OK
 
 ```http request
 POST http://localhost:1337/topics
@@ -75,6 +81,8 @@ Authorization: Bearer {{jwt}}
 }
 
 > this.status === 200
+> typeof this.json.id === "number"
+> this.json.title === "random-subject"
 % store.topic = this.json.id
 ```
 
@@ -83,16 +91,18 @@ POST http://localhost:1337/messages
 Content-Type: application/json
 Authorization: Bearer {{jwt}}
 
-
 {
-    "topic": "{{topic}}"
+    "topic": "{{topic}}",
+    "content": "lorem ipsum"
 }
 
 > this.status === 200
+> typeof this.json.id === "number"
+> this.json.content === "lorem ipsum"
 ```
 
 
-#### Authenticated GET should receive a 200 status
+#### Authenticated GET should return 200 OK
 
 
 ```http request
@@ -101,6 +111,8 @@ Content-Type: application/json
 Authorization: Bearer {{jwt}}
 
 > this.status === 200
+> this.json.length === 1
+> this.json[0].id === store.topic
 ```
 
 ```http request
@@ -109,4 +121,6 @@ Content-Type: application/json
 Authorization: Bearer {{jwt}}
 
 > this.status === 200
+> this.json.length === 1
+> this.json[0].topic.id === store.topic
 ```

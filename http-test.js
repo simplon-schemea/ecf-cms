@@ -14,13 +14,91 @@ const ansi = {
     reset: "\u001b[0m"
 };
 
+class Output {
+    lf = 0;
+    ansi = null;
+
+    /**
+     * Insert linefeeds until <code>count</code> is reached
+     * linefeeds inserted by previous call of log() or insertLineFeeds() are taken into account
+     * @param {number} count number of desired linefeeds
+     */
+    insertLineFeeds(count) {
+        const diff = count - this.lf;
+
+        if (diff > 0) {
+            console.log("\n".repeat(diff - 1));
+        }
+
+        this.lf = count;
+    }
+
+    /**
+     * Keep the provided value until the next log() or end() call as to no generate extra linefeed
+     * @param {string} code intended to be use with ansi escape code, but will work with any string
+     */
+    format(code) {
+        this.ansi = code;
+    }
+
+    /**
+     * Print to the consoles, add a linefeed at the end
+     * @param args values to be printed, each will be separated by a space
+     */
+    log(...args) {
+        let values = args;
+
+        if (this.ansi) {
+            if (values.length > 0) {
+                values[0] = this.ansi + values[0];
+            } else {
+                values = [this.ansi];
+            }
+
+            this.ansi = null;
+        }
+
+        console.log(...values);
+
+        values = args.map(value => value.toString());
+        this.lf = 0;
+
+        values
+            .reverse()
+            .some(str => {
+                for (let i = str.length - 1; i >= 0; i++) {
+                    switch (str.charAt(i)) {
+                        case "\n":
+                            this.lf++;
+                            break;
+                        case "\r":
+                            continue;
+                        default:
+                            return true;
+                    }
+
+                    return false;
+                }
+            });
+    }
+
+    /**
+     * Print kept ansi code if it was not printed yet
+     */
+    end() {
+        if (this.ansi) {
+            this.log(this.ansi);
+            this.ansi = null;
+        }
+    }
+}
+
 /**
  * Make a HTTP Request
- *
  * @param options { {url: string, method: string, body: string, headers?: http.OutgoingHttpHeaders }}
  */
 function request(options) {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
         const headers = options.headers || {};
 
         if (!headers["Content-Length"] && options.body) {
@@ -46,6 +124,8 @@ function request(options) {
             });
         });
 
+        req.on("error", reject);
+
         if (req.writable) {
             if (options.body) {
                 req.write(options.body);
@@ -58,8 +138,7 @@ function request(options) {
 
 
 /**
- * Add prepend <code>prefix</code> and append <code>suffix</code> to each line in <code>value</code>
- *
+ * Prepend <code>prefix</code> and append <code>suffix</code> to each line in <code>value</code>
  * @param {string} prefix
  * @param {string} value
  * @param {string} [suffix]
@@ -88,68 +167,91 @@ async function main() {
         .map(parseRequest);
 
     const interpolationMap = global.store = {};
+    const out = new Output();
 
     let success = 0;
-    let failed = 0;
 
     for (const req of requests) {
-        req.url = interpolate(req.url, interpolationMap);
+        try {
+            req.url = interpolate(req.url, interpolationMap);
 
-        console.log(`> ${ req.method } ${ req.url }`);
-        for (let key in req.headers) {
-            key = interpolate(key, interpolationMap);
-            req.headers[key] = interpolate(req.headers[key], interpolationMap);
-            console.log(`> ${ key }: ${ req.headers[key] }`);
-        }
+            out.log(`> ${ req.method } ${ req.url }`);
 
-        if (req.body) {
-            req.body = interpolate(req.body, interpolationMap);
-            console.log(ansi.cyan);
-            console.log(addToLines("> ", req.body));
-            console.log(ansi.reset);
-        }
-
-        const res = await request(req);
-
-        for (const key in res.headers) {
-            console.log(`< ${ key }: ${ res.headers[key] }`);
-        }
-
-        const json = JSON.parse(res.body);
-        if (json) {
-            console.log(ansi.cyan);
-            console.log(addToLines("< ", JSON.stringify(json, null, 2)));
-            console.log(ansi.reset);
-        }
-
-        const this_ = {
-            status: res.status,
-            json
-        };
-
-        for (const test of req.tests) {
-
-            const fn = new Function("return" + test);
-            const result = fn.apply(this_);
-
-            if (result) {
-                success++;
-            } else {
-                failed++;
+            for (let key in req.headers) {
+                key = interpolate(key, interpolationMap);
+                req.headers[key] = interpolate(req.headers[key], interpolationMap);
+                out.log(`> ${ key }: ${ req.headers[key] }`);
             }
 
-            console.log(`${ result ? ansi.green : ansi.red }test: [ ${ test.trim() } ] has ${ result ? "passed" : "failed" }${ ansi.reset }`);
-        }
+            out.insertLineFeeds(1);
 
-        for (const side of req.sides) {
-            const fn = new Function(side);
-            fn.apply(this_);
-        }
+            if (req.body) {
+                req.body = interpolate(req.body, interpolationMap);
+                out.format(ansi.cyan);
+                out.log(addToLines("> ", req.body));
+                out.format(ansi.reset);
+            }
 
-        console.log();
+            out.insertLineFeeds(1);
+
+            const res = await request(req);
+
+            for (const key in res.headers) {
+                if (res.headers.hasOwnProperty(key)) {
+                    out.log(`< ${ key }: ${ res.headers[key] }`);
+                }
+            }
+
+            out.insertLineFeeds(1);
+
+            const json = JSON.parse(res.body);
+            if (json) {
+                out.format(ansi.cyan);
+                out.log(addToLines("< ", JSON.stringify(json, null, 2)));
+                out.format(ansi.reset);
+            }
+
+            out.insertLineFeeds(1);
+
+            const this_ = {
+                status: res.status,
+                json
+            };
+
+            const testResult = req.tests.map(function (test) {
+                const fn = new Function("return" + test);
+                const result = fn.apply(this_);
+
+
+                out.log(`test: ${ result ? ansi.green : ansi.red }[ ${ test.trim() } ]${ ansi.reset } has ${ result ? "passed" : "failed" }`);
+
+                return result;
+            }).some(success => !success);
+
+            if (!testResult) {
+                success++;
+            }
+
+            for (const side of req.sides) {
+                const fn = new Function(side);
+                fn.apply(this_);
+            }
+
+            out.insertLineFeeds(2);
+
+        } catch (e) {
+            out.insertLineFeeds(2);
+            console.error(`${ ansi.red }an exception occurred during the test`);
+            console.error(e, ansi.reset);
+            out.lf = 0;
+        }
     }
 
-    console.log(`${ failed ? ansi.red : ansi.green }${ success } of ${ failed + success } tests passed${ ansi.reset }`);
+    const haveFailures = success !== requests.length;
+
+    out.insertLineFeeds(2);
+    out.log(`${ haveFailures ? ansi.red : ansi.green }${ success } of ${ requests.length } tests passed${ ansi.reset }`);
+    out.end();
 }
 
 /**
